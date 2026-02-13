@@ -34,8 +34,7 @@ export default class ThemeSwitcherPlugin extends Plugin {
 	styleService: StyleService;
 	windowService: WindowService;
 	private themeChangeObserver: MutationObserver | null = null;
-	private isSwitchingMode = false;
-	private statusBarItem: HTMLElement | null = null;
+private statusBarItem: HTMLElement | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -113,15 +112,12 @@ export default class ThemeSwitcherPlugin extends Plugin {
 	 * Switch Obsidian between light and dark mode
 	 */
 	private switchObsidianMode(targetMode: 'light' | 'dark') {
-		this.isSwitchingMode = true;
 		try {
 			const commandId = targetMode === 'dark' ? 'theme:use-dark' : 'theme:use-light';
 			// @ts-ignore - executeCommandById is available but not in public types
 			(this.app as any).commands.executeCommandById(commandId);
 		} catch (e) {
 			console.error('CodeSplash Themes: Failed to switch mode:', e);
-		} finally {
-			setTimeout(() => { this.isSwitchingMode = false; }, 100);
 		}
 	}
 
@@ -130,7 +126,6 @@ export default class ThemeSwitcherPlugin extends Plugin {
 	 */
 	private setupThemeModeObserver() {
 		this.themeChangeObserver = new MutationObserver(() => {
-			if (this.isSwitchingMode) return;
 			this.applyCurrentTheme();
 		});
 		this.themeChangeObserver.observe(document.body, {
