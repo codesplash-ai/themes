@@ -90,40 +90,12 @@ export class StyleService {
 	 * Generate base CSS only (no color theme)
 	 */
 	private async generateBaseCSS(): Promise<string> {
-		const lines: string[] = [];
-		const isDark = this.isDarkMode();
-
-		// Layer 1: Base structural styles (always applied)
-		lines.push("/* ========================================");
-		lines.push("   Layer 1: Base Structural Styles");
-		lines.push("   (from base.css - always applied)");
-		lines.push("   ======================================== */");
-		lines.push("");
-		lines.push(this.cssCache.base || "");
-		lines.push("");
-
-		// Layer 2: Mode-specific base styles (dark or light)
-		lines.push("/* ========================================");
-		lines.push(`   Layer 2: ${isDark ? 'Dark' : 'Light'} Mode Base Styles`);
-		lines.push(`   (from base-${isDark ? 'dark' : 'light'}.css)`);
-		lines.push("   ======================================== */");
-		lines.push("");
-		lines.push(isDark ? (this.cssCache.dark || "") : (this.cssCache.light || ""));
-		lines.push("");
-
-		lines.push("/* No color theme selected */");
-		lines.push("");
-
-		// Window controls styles (separate from theme layers)
-		lines.push("/* ========================================");
-		lines.push("   Window Controls Styles");
-		lines.push("   (from window.css)");
-		lines.push("   ======================================== */");
-		lines.push("");
+		// Only inject window controls styles when no theme is active.
+		// Skip base structural and mode-specific CSS because they override
+		// Obsidian variables (e.g. --background-primary) with semantic vars
+		// (e.g. --BACKGROUND-PRIMARY) that are only defined by themes.
 		const windowStyles = await getWindowStyles();
-		lines.push(windowStyles);
-
-		return lines.join("\n");
+		return windowStyles;
 	}
 
 	/**

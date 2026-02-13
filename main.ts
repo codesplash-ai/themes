@@ -1,20 +1,10 @@
-import { App, Plugin } from "obsidian";
+import { Plugin } from "obsidian";
 import { ThemeService } from "./src/services/ThemeService";
 import { StyleService } from "./src/services/StyleService";
 import { WindowService, VibrancyType, VIBRANCY_OPTIONS } from "./src/services/WindowService";
 import { ThemeSwitcherSettingTab } from "./src/settings";
 import { Theme } from "./src/models/Theme";
 import iconSvg from "./assets/palette.svg";
-
-/**
- * Obsidian's internal commands API, not exposed in public types.
- * Used to switch between light/dark mode via theme:use-dark / theme:use-light.
- */
-interface ObsidianApp extends App {
-	commands: {
-		executeCommandById(id: string): boolean;
-	};
-}
 
 interface WindowSettings {
 	alwaysOnTop: boolean;
@@ -44,6 +34,7 @@ export default class ThemeSwitcherPlugin extends Plugin {
 	styleService: StyleService;
 	windowService: WindowService;
 	private themeChangeObserver: MutationObserver | null = null;
+	private isSwitchingMode = false;
 	private statusBarItem: HTMLElement | null = null;
 
 	async onload() {
@@ -122,11 +113,15 @@ export default class ThemeSwitcherPlugin extends Plugin {
 	 * Switch Obsidian between light and dark mode
 	 */
 	private switchObsidianMode(targetMode: 'light' | 'dark') {
+		this.isSwitchingMode = true;
 		try {
 			const commandId = targetMode === 'dark' ? 'theme:use-dark' : 'theme:use-light';
-			(this.app as ObsidianApp).commands.executeCommandById(commandId);
-		} catch {
-			// Command may not be available
+			// @ts-ignore - executeCommandById is available but not in public types
+			(this.app as any).commands.executeCommandById(commandId);
+		} catch (e) {
+			console.error('CodeSplash Themes: Failed to switch mode:', e);
+		} finally {
+			setTimeout(() => { this.isSwitchingMode = false; }, 100);
 		}
 	}
 
@@ -135,11 +130,9 @@ export default class ThemeSwitcherPlugin extends Plugin {
 	 */
 	private setupThemeModeObserver() {
 		this.themeChangeObserver = new MutationObserver(() => {
-			// When Obsidian switches between light and dark mode, reapply current theme
+			if (this.isSwitchingMode) return;
 			this.applyCurrentTheme();
 		});
-
-		// Observe class changes on body element (Obsidian adds/removes theme-dark class)
 		this.themeChangeObserver.observe(document.body, {
 			attributes: true,
 			attributeFilter: ['class']
@@ -181,7 +174,7 @@ export default class ThemeSwitcherPlugin extends Plugin {
 		// Switch Obsidian mode based on theme's mode setting
 		if (themeId) {
 			const theme = this.themeService.getTheme(themeId);
-				if (theme && theme.mode) {
+			if (theme && theme.mode) {
 				this.switchObsidianMode(theme.mode);
 			}
 		}
