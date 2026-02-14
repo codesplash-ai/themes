@@ -3,7 +3,7 @@ import { ThemeService } from "./src/services/ThemeService";
 import { StyleService } from "./src/services/StyleService";
 import { WindowService, VibrancyType, VIBRANCY_OPTIONS } from "./src/services/WindowService";
 import { ThemeSwitcherSettingTab } from "./src/settings";
-import { Theme } from "./src/models/Theme";
+import { Theme, ThemeMode } from "./src/models/Theme";
 import iconSvg from "./assets/palette.svg";
 
 interface WindowSettings {
@@ -34,7 +34,7 @@ export default class ThemeSwitcherPlugin extends Plugin {
 	styleService: StyleService;
 	windowService: WindowService;
 	private themeChangeObserver: MutationObserver | null = null;
-private statusBarItem: HTMLElement | null = null;
+	private statusBarItem: HTMLElement | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -44,8 +44,14 @@ private statusBarItem: HTMLElement | null = null;
 		this.styleService = new StyleService(this.app, this.manifest.dir || "");
 		this.windowService = new WindowService();
 
+		// Keep Obsidian's base light/dark mode in sync with the active theme on startup.
+		const initialTheme = this.getActiveTheme();
+		if (initialTheme?.mode) {
+			await this.switchObsidianMode(initialTheme.mode);
+		}
+
 		// Always apply base styles, with or without a color theme
-		await this.applyCurrentTheme();
+		await this.applyCurrentTheme(initialTheme?.mode);
 
 		// Apply window settings (desktop only)
 		if (this.windowService.isDesktop()) {
@@ -93,11 +99,11 @@ private statusBarItem: HTMLElement | null = null;
 	/**
 	 * Apply the current theme (or just base styles if no theme selected)
 	 */
-	private async applyCurrentTheme() {
+	private async applyCurrentTheme(modeOverride?: ThemeMode) {
 		if (this.settings.activeThemeId) {
 			const activeTheme = this.themeService.getTheme(this.settings.activeThemeId);
 			if (activeTheme) {
-				await this.styleService.applyTheme(activeTheme);
+				await this.styleService.applyTheme(activeTheme, modeOverride);
 			} else {
 				// Theme not found, apply base styles only
 				await this.styleService.applyBaseStyles();
@@ -111,14 +117,196 @@ private statusBarItem: HTMLElement | null = null;
 	/**
 	 * Switch Obsidian between light and dark mode
 	 */
-	private switchObsidianMode(targetMode: 'light' | 'dark') {
-		try {
-			const commandId = targetMode === 'dark' ? 'theme:use-dark' : 'theme:use-light';
-			// @ts-ignore - executeCommandById is available but not in public types
-			(this.app as any).commands.executeCommandById(commandId);
-		} catch (e) {
-			console.error('CodeSplash Themes: Failed to switch mode:', e);
+	private getCurrentMode(): ThemeMode {
+		if (document.body.classList.contains("theme-dark")) {
+			return "dark";
 		}
+		if (document.body.classList.contains("theme-light")) {
+			return "light";
+		}
+		return this.app.isDarkMode() ? "dark" : "light";
+	}
+
+	/**
+	 * Execute an Obsidian command by id, while handling command id differences across versions.
+	 */
+	private async executeObsidianCommand(commandId: string): Promise<boolean> {
+		// @ts-ignore - commands manager exists at runtime but is not in public types
+		const commands = (this.app as any).commands;
+		if (!commands?.executeCommandById) {
+			return false;
+		}
+
+		// If the registry is available and command is missing, skip execution.
+		const registry = commands.commands as Record<string, unknown> | undefined;
+		if (registry && !registry[commandId]) {
+			return false;
+		}
+
+		try {
+			const result = commands.executeCommandById(commandId);
+			if (result instanceof Promise) {
+				const resolved = await result;
+				return resolved !== false;
+			}
+			return result !== false;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Wait for Obsidian to actually apply the requested light/dark mode.
+	 */
+	private async waitForModeChange(targetMode: ThemeMode, timeoutMs = 2000): Promise<boolean> {
+		if (this.getCurrentMode() === targetMode) {
+			return true;
+		}
+
+		const deadline = Date.now() + timeoutMs;
+
+		return new Promise(resolve => {
+			const poll = () => {
+				if (this.getCurrentMode() === targetMode) {
+					resolve(true);
+					return;
+				}
+
+				if (Date.now() >= deadline) {
+					resolve(false);
+					return;
+				}
+
+				window.setTimeout(poll, 25);
+			};
+
+			poll();
+		});
+	}
+
+	/**
+	 * Try Obsidian's internal setTheme API when command ids are unavailable.
+	 */
+	private async trySetThemeApi(targetMode: ThemeMode): Promise<boolean> {
+		const appAny = this.app as any;
+		const setTheme = appAny?.setTheme;
+		if (typeof setTheme !== "function") {
+			return false;
+		}
+
+		const candidates = targetMode === "dark"
+			? ["obsidian", "dark"]
+			: ["moonstone", "light"];
+
+		for (const candidate of candidates) {
+			try {
+				const result = setTheme.call(appAny, candidate);
+				if (result instanceof Promise) {
+					await result;
+				}
+			} catch {
+				continue;
+			}
+
+			if (await this.waitForModeChange(targetMode, 800)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Try internal config setters to persist/apply base mode for older/newer internals.
+	 */
+	private async trySetVaultConfigMode(targetMode: ThemeMode): Promise<boolean> {
+		const appAny = this.app as any;
+		const vault = appAny?.vault;
+		const setConfig = vault?.setConfig;
+		if (typeof setConfig !== "function") {
+			return false;
+		}
+
+		const configAttempts = targetMode === "dark"
+			? [
+				["theme", "obsidian"],
+				["baseTheme", "dark"],
+			]
+			: [
+				["theme", "moonstone"],
+				["baseTheme", "light"],
+			];
+
+		for (const [key, value] of configAttempts) {
+			try {
+				const result = setConfig.call(vault, key, value);
+				if (result instanceof Promise) {
+					await result;
+				}
+				appAny?.workspace?.trigger?.("css-change");
+			} catch {
+				continue;
+			}
+
+			if (await this.waitForModeChange(targetMode, 800)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Last-resort mode switch by flipping body classes.
+	 */
+	private forceModeBodyClasses(targetMode: ThemeMode): boolean {
+		const body = document.body;
+		if (!body) {
+			return false;
+		}
+
+		body.classList.toggle("theme-dark", targetMode === "dark");
+		body.classList.toggle("theme-light", targetMode === "light");
+
+		const appAny = this.app as any;
+		appAny?.workspace?.trigger?.("css-change");
+
+		return body.classList.contains(targetMode === "dark" ? "theme-dark" : "theme-light");
+	}
+
+	/**
+	 * Switch Obsidian between light and dark mode.
+	 * Supports both old (theme:use-*) and new (theme:toggle-light-dark) command ids.
+	 */
+	private async switchObsidianMode(targetMode: ThemeMode): Promise<boolean> {
+		if (this.getCurrentMode() === targetMode) {
+			return true;
+		}
+
+		const explicitCommand = targetMode === "dark" ? "theme:use-dark" : "theme:use-light";
+		const usedExplicitCommand = await this.executeObsidianCommand(explicitCommand);
+		if (usedExplicitCommand && (await this.waitForModeChange(targetMode))) {
+			return true;
+		}
+
+		const usedToggleCommand = await this.executeObsidianCommand("theme:toggle-light-dark");
+		if (usedToggleCommand && (await this.waitForModeChange(targetMode))) {
+			return true;
+		}
+
+		if (await this.trySetThemeApi(targetMode)) {
+			return true;
+		}
+
+		if (await this.trySetVaultConfigMode(targetMode)) {
+			return true;
+		}
+
+		if (this.forceModeBodyClasses(targetMode) && (await this.waitForModeChange(targetMode, 250))) {
+			return true;
+		}
+
+		return this.getCurrentMode() === targetMode || this.forceModeBodyClasses(targetMode);
 	}
 
 	/**
@@ -126,7 +314,7 @@ private statusBarItem: HTMLElement | null = null;
 	 */
 	private setupThemeModeObserver() {
 		this.themeChangeObserver = new MutationObserver(() => {
-			this.applyCurrentTheme();
+			void this.applyCurrentTheme();
 		});
 		this.themeChangeObserver.observe(document.body, {
 			attributes: true,
@@ -165,16 +353,16 @@ private statusBarItem: HTMLElement | null = null;
 	 */
 	async setActiveTheme(themeId: string | null) {
 		this.settings.activeThemeId = themeId;
+		const theme = themeId ? this.themeService.getTheme(themeId) : undefined;
 
 		// Switch Obsidian mode based on theme's mode setting
-		if (themeId) {
-			const theme = this.themeService.getTheme(themeId);
-			if (theme && theme.mode) {
-				this.switchObsidianMode(theme.mode);
-			}
+		if (theme?.mode) {
+			await this.switchObsidianMode(theme.mode);
+			await this.applyCurrentTheme(theme.mode);
+		} else {
+			await this.applyCurrentTheme();
 		}
 
-		await this.applyCurrentTheme();
 		await this.saveSettings();
 	}
 
@@ -201,7 +389,7 @@ private statusBarItem: HTMLElement | null = null;
 		}
 
 		const nextTheme = themes[nextIndex];
-		this.setActiveTheme(nextTheme.id);
+		void this.setActiveTheme(nextTheme.id);
 	}
 
 	/**

@@ -1,5 +1,5 @@
 import { App } from "obsidian";
-import { Theme } from "../models/Theme";
+import { Theme, ThemeMode } from "../models/Theme";
 import {
 	getBaseStructuralStyles,
 	getBaseDarkStyles,
@@ -54,9 +54,9 @@ export class StyleService {
 	/**
 	 * Apply a theme by injecting its CSS into the document
 	 */
-	async applyTheme(theme: Theme): Promise<void> {
+	async applyTheme(theme: Theme, modeOverride?: ThemeMode): Promise<void> {
 		await this.loadBaseStyles();
-		const css = await this.generateCSS(theme);
+		const css = await this.generateCSS(theme, modeOverride);
 		this.injectCSS(css);
 	}
 
@@ -72,7 +72,15 @@ export class StyleService {
 	/**
 	 * Detect if Obsidian is in dark mode
 	 */
-	private isDarkMode(): boolean {
+	private isDarkMode(modeOverride?: ThemeMode): boolean {
+		if (modeOverride) {
+			return modeOverride === "dark";
+		}
+
+		if (typeof this.app.isDarkMode === "function") {
+			return this.app.isDarkMode();
+		}
+
 		return document.body.classList.contains('theme-dark');
 	}
 
@@ -101,9 +109,9 @@ export class StyleService {
 	/**
 	 * Generate CSS from a theme
 	 */
-	private async generateCSS(theme: Theme): Promise<string> {
+	private async generateCSS(theme: Theme, modeOverride?: ThemeMode): Promise<string> {
 		const lines: string[] = [];
-		const isDark = this.isDarkMode();
+		const isDark = this.isDarkMode(modeOverride);
 
 		// Layer 1: Base structural styles (always applied)
 		lines.push("/* ========================================");
